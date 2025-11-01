@@ -7,6 +7,7 @@ CXXFLAGS = -g -msse3 -std=c++17 -O2
 # --- Paths---
 IPP_INCLUDE_PATH = /opt/intel/oneapi/2025.3/include #change to your IPP include path
 IPP_LIB_PATH = /opt/intel/oneapi/2025.3/lib
+OCV_INCLUDE_PATH = /usr/include/opencv4
 
 # --- Linker ---
 LDFLAGS = -L$(IPP_LIB_PATH)
