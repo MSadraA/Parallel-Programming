@@ -13,7 +13,9 @@
             "cppStandard": "gnu++17",
             "intelliSenseMode": "linux-gcc-x64",
             "compilerArgs": [
-                "-msse3"
+                "-msse3",
+                "-mavx",
+                "-mavx2"
             ]
         }
     ],
