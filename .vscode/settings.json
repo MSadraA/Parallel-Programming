@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "iostream": "cpp",
+        "initializer_list": "cpp",
+        "xutility": "cpp",
+        "random": "cpp"
+    }
+}
