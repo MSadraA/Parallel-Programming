@@ -1,208 +1,258 @@
 #include <iostream>
 #include <iomanip>
 #include <vector>
-#include "ipp.h"
+#include "ipp.h"       
 #include <immintrin.h>
 #include <opencv2/opencv.hpp>
+#include <cstring> // for memcpy
 
 using namespace std;
 using namespace cv;
 
-static inline void prefetchL1(const void* ptr) {
-    _mm_prefetch((const char*)ptr, _MM_HINT_T0);
-}
 
-inline void serial_blend_manual(
-    const Mat& __restrict base_img,
-    const Mat& __restrict water_img,
-    Mat& __restrict out_img)
-{
+void parallel_blend_avx_channel(const Mat& base_img, const Mat& water_img, Mat& out_img) {
     const int height = base_img.rows;
-    const int width  = base_img.cols;
+    const int width = base_img.cols;
     const float total_dim_inv = 1.0f / (float)(width + height);
-    const float x_step = 8.0f * total_dim_inv;
-    const float one = 1.0f;
 
-    // ثابت‌ها برای جلوگیری از reallocation هر بار
-    const float idx[8] = {0,1,2,3,4,5,6,7};
+    // Start parallel region
+    __m256 constant_vec = _mm256_set1_ps(total_dim_inv);
+    __m256 one_vec = _mm256_set1_ps(1.0f);
+    __m256 x_index = _mm256_set_ps(7.0 , 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0); // 0.0 to smallest index (i)
+    __m256 x_step = _mm256_set1_ps(8.0f * total_dim_inv);
 
     for (int y = 0; y < height; ++y) {
-        const unsigned char* __restrict base_ptr  = base_img.ptr<unsigned char>(y);
-        const unsigned char* __restrict water_ptr = water_img.ptr<unsigned char>(y);
-        unsigned char* __restrict out_ptr         = out_img.ptr<unsigned char>(y);
+        // access to current pixel
+        const unsigned char* base_ptr = base_img.ptr<unsigned char>(y);
+        unsigned char* out_ptr = out_img.ptr<unsigned char>(y);
+        const unsigned char* water_ptr = water_img.ptr<unsigned char>(y);
 
-        const float alpha_y = (float)y * total_dim_inv;
+        __m256 alpha_by_y = _mm256_set1_ps((float)y * total_dim_inv); // y/(height + width)
+        __m256 x_index_mul_by_constant = _mm256_mul_ps(x_index, constant_vec); // i/(height + width)
+        __m256 alpha_by_x_y = _mm256_add_ps(alpha_by_y, x_index_mul_by_constant); // i/(height + width) + y/(height + width)
 
-        // precompute 8 α مقادیر اول
-        float a0 = alpha_y + idx[0]*total_dim_inv;
-        float a1 = alpha_y + idx[1]*total_dim_inv;
-        float a2 = alpha_y + idx[2]*total_dim_inv;
-        float a3 = alpha_y + idx[3]*total_dim_inv;
-        float a4 = alpha_y + idx[4]*total_dim_inv;
-        float a5 = alpha_y + idx[5]*total_dim_inv;
-        float a6 = alpha_y + idx[6]*total_dim_inv;
-        float a7 = alpha_y + idx[7]*total_dim_inv;
-
+        int x = 0;
         const int limit = (width / 8) * 8;
 
-        // Unrolled inner loop
-        for (int x = 0; x < limit; x += 8) {
-            // محاسبه‌ی ۸ پیکسل در یک iteration
-            const float base0 = (float)base_ptr[x+0];
-            const float base1 = (float)base_ptr[x+1];
-            const float base2 = (float)base_ptr[x+2];
-            const float base3 = (float)base_ptr[x+3];
-            const float base4 = (float)base_ptr[x+4];
-            const float base5 = (float)base_ptr[x+5];
-            const float base6 = (float)base_ptr[x+6];
-            const float base7 = (float)base_ptr[x+7];
+        for(; x < limit; x += 8){
+            __m256 one_minus_alpha_vec = _mm256_sub_ps(one_vec, alpha_by_x_y); // 1 - alpha
+            __m128i v_base_u8  = _mm_loadl_epi64((__m128i const*)(base_ptr + x));
+            __m128i v_water_u8 = _mm_loadl_epi64((__m128i const*)(water_ptr + x));
 
-            const float water0 = (float)water_ptr[x+0];
-            const float water1 = (float)water_ptr[x+1];
-            const float water2 = (float)water_ptr[x+2];
-            const float water3 = (float)water_ptr[x+3];
-            const float water4 = (float)water_ptr[x+4];
-            const float water5 = (float)water_ptr[x+5];
-            const float water6 = (float)water_ptr[x+6];
-            const float water7 = (float)water_ptr[x+7];
+            __m256i v_base_i32  = _mm256_cvtepu8_epi32(v_base_u8); // it can be done with a single instruction
+            __m256i v_water_i32 = _mm256_cvtepu8_epi32(v_water_u8);
+            __m256 v_base_f  = _mm256_cvtepi32_ps(v_base_i32);
+            __m256 v_water_f = _mm256_cvtepi32_ps(v_water_i32);
+            
+            // calculate result for 8 pixels
+            __m256 term1 = _mm256_mul_ps(v_water_f, alpha_by_x_y);
+            __m256 term2 = _mm256_mul_ps(v_base_f, one_minus_alpha_vec);
+            __m256 v_result_f = _mm256_add_ps(term1, term2);
 
-            // استفاده از FMA برای دقت و سرعت بیشتر
-            out_ptr[x+0] = (unsigned char)fmaf(water0, a0, base0 * (one - a0));
-            out_ptr[x+1] = (unsigned char)fmaf(water1, a1, base1 * (one - a1));
-            out_ptr[x+2] = (unsigned char)fmaf(water2, a2, base2 * (one - a2));
-            out_ptr[x+3] = (unsigned char)fmaf(water3, a3, base3 * (one - a3));
-            out_ptr[x+4] = (unsigned char)fmaf(water4, a4, base4 * (one - a4));
-            out_ptr[x+5] = (unsigned char)fmaf(water5, a5, base5 * (one - a5));
-            out_ptr[x+6] = (unsigned char)fmaf(water6, a6, base6 * (one - a6));
-            out_ptr[x+7] = (unsigned char)fmaf(water7, a7, base7 * (one - a7));
+            // convert result to unsigned char
+            __m256i v_result_i32 = _mm256_cvtps_epi32(v_result_f); // convert to 32-bit integer
+            __m128i v_low_i32  = _mm256_castsi256_si128(v_result_i32); // extract lower 128 bits
+            __m128i v_high_i32 = _mm256_extractf128_si256(v_result_i32, 1); // extract upper 128 bits
+            __m128i v_result_i16 = _mm_packus_epi32(v_low_i32, v_high_i32); // pack unsigned 16-bit integers
+            __m128i v_result_u8  = _mm_packus_epi16(v_result_i16, _mm_setzero_si128()); // pack unsigned 8-bit integers
+            _mm_storel_epi64((__m128i*)(out_ptr + x), v_result_u8); // store packed unsigned 8-bit integers
 
-            // افزایش دستی α
-            a0 += x_step; a1 += x_step; a2 += x_step; a3 += x_step;
-            a4 += x_step; a5 += x_step; a6 += x_step; a7 += x_step;
+            // update alpha for next 8 pixels
+            alpha_by_x_y = _mm256_add_ps(alpha_by_x_y, x_step); // new alpha = i/(height + width) + y/(height + width) + 8/(height + width)
         }
 
-        // باقی‌مانده پیکسل‌ها
-        for (int x = limit; x < width; ++x) {
-            const float alpha = ((float)x + (float)y) * total_dim_inv;
-            out_ptr[x] = (unsigned char)fmaf(water_ptr[x], alpha, base_ptr[x] * (1.0f - alpha));
+        // calculate remaining pixels
+        for (; x < width; ++x) {
+            float alpha = ((float)x + (float)y) * total_dim_inv;
+            float one_minus_alpha = 1.0f - alpha;
+            float base_f = (float)base_ptr[x];
+            float water_f = (float)water_ptr[x];
+            float out_f = (water_f * alpha) + (base_f * one_minus_alpha);
+            out_ptr[x] = (unsigned char)out_f;
         }
     }
 }
 
-
-__attribute__((always_inline))
-inline void blend_channel_avx_manual(
-    const Mat& __restrict base_img,
-    const Mat& __restrict water_img,
-    Mat& __restrict out_img)
+void serial_optimized_blend_channel(const Mat& base_img, const Mat& water_img, Mat& out_img) 
 {
     const int height = base_img.rows;
     const int width = base_img.cols;
-    const size_t step = base_img.step[0];
-
     const float total_dim_inv = 1.0f / (float)(width + height);
 
-    const __m256 inv_vec  = _mm256_set1_ps(total_dim_inv);
-    const __m256 one_vec  = _mm256_set1_ps(1.0f);
-    const __m256 step_vec = _mm256_set1_ps(8.0f * total_dim_inv);
-    const __m256 base_x   = _mm256_mul_ps(inv_vec, _mm256_set_ps(7,6,5,4,3,2,1,0));
+    const float c = total_dim_inv;
+    const float x_indices[8] = {0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f};
+    const float x_step = 8.0f * c;
+    const float one = 1.0f;
 
-    const int limit = (width / 8) * 8;
+    float a0, a1, a2, a3, a4, a5, a6, a7;
+    float out_f0, out_f1, out_f2, out_f3, out_f4, out_f5, out_f6, out_f7;
 
-    for (int y = 0; y < height; ++y) {
-        const unsigned char* __restrict base_ptr  = base_img.data + y * step;
-        const unsigned char* __restrict water_ptr = water_img.data + y * step;
-        unsigned char* __restrict out_ptr         = out_img.data + y * step;
+    for (int y = 0; y < height; y++) {
+        const unsigned char* base_ptr = base_img.ptr<unsigned char>(y);
+        const unsigned char* water_ptr = water_img.ptr<unsigned char>(y);
+        unsigned char* out_ptr = out_img.ptr<unsigned char>(y);
+        
+        const float alpha_y = (float)y * c;
+        a0 = alpha_y + (x_indices[0] * c);
+        a1 = alpha_y + (x_indices[1] * c);
+        a2 = alpha_y + (x_indices[2] * c);
+        a3 = alpha_y + (x_indices[3] * c);
+        a4 = alpha_y + (x_indices[4] * c);
+        a5 = alpha_y + (x_indices[5] * c);
+        a6 = alpha_y + (x_indices[6] * c);
+        a7 = alpha_y + (x_indices[7] * c);
 
-        __m256 alpha_by_y = _mm256_set1_ps((float)y * total_dim_inv);
-        __m256 alpha_vec  = _mm256_add_ps(alpha_by_y, base_x);
+        int x = 0;
+        const int limit = (width / 8) * 8;
 
-        for (int x = 0; x < limit; x += 8) {
-            // prefetch future data
-            prefetchL1(base_ptr + x + 64);
-            prefetchL1(water_ptr + x + 64);
+        for (; x < limit; x += 8) {
+            
+            out_f0 = (float)water_ptr[x+0] * a0 + (float)base_ptr[x+0] * (one - a0);
+            out_f1 = (float)water_ptr[x+1] * a1 + (float)base_ptr[x+1] * (one - a1);
+            out_f2 = (float)water_ptr[x+2] * a2 + (float)base_ptr[x+2] * (one - a2);
+            out_f3 = (float)water_ptr[x+3] * a3 + (float)base_ptr[x+3] * (one - a3);
+            out_f4 = (float)water_ptr[x+4] * a4 + (float)base_ptr[x+4] * (one - a4);
+            out_f5 = (float)water_ptr[x+5] * a5 + (float)base_ptr[x+5] * (one - a5);
+            out_f6 = (float)water_ptr[x+6] * a6 + (float)base_ptr[x+6] * (one - a6);
+            out_f7 = (float)water_ptr[x+7] * a7 + (float)base_ptr[x+7] * (one - a7);
+            
+            out_ptr[x+0] = (unsigned char)out_f0;
+            out_ptr[x+1] = (unsigned char)out_f1;
+            out_ptr[x+2] = (unsigned char)out_f2;
+            out_ptr[x+3] = (unsigned char)out_f3;
+            out_ptr[x+4] = (unsigned char)out_f4;
+            out_ptr[x+5] = (unsigned char)out_f5;
+            out_ptr[x+6] = (unsigned char)out_f6;
+            out_ptr[x+7] = (unsigned char)out_f7;
 
-            const __m128i v_base_u8  = _mm_loadl_epi64((__m128i const*)(base_ptr + x));
-            const __m128i v_water_u8 = _mm_loadl_epi64((__m128i const*)(water_ptr + x));
-
-            const __m256 v_base_f  = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(v_base_u8));
-            const __m256 v_water_f = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(v_water_u8));
-
-            const __m256 one_minus_a = _mm256_sub_ps(one_vec, alpha_vec);
-
-            // FMA: (water * α) + (base * (1-α))
-            const __m256 v_result = _mm256_fmadd_ps(v_water_f, alpha_vec,
-                                                    _mm256_mul_ps(v_base_f, one_minus_a));
-
-            // convert back to 8-bit unsigned
-            const __m256i v_i32 = _mm256_cvtps_epi32(v_result);
-            const __m128i v_lo = _mm256_castsi256_si128(v_i32);
-            const __m128i v_hi = _mm256_extractf128_si256(v_i32, 1);
-            const __m128i v_i16 = _mm_packus_epi32(v_lo, v_hi);
-            const __m128i v_u8  = _mm_packus_epi16(v_i16, _mm_setzero_si128());
-            _mm_storel_epi64((__m128i*)(out_ptr + x), v_u8);
-
-            alpha_vec = _mm256_add_ps(alpha_vec, step_vec);
+            a0 += x_step;
+            a1 += x_step;
+            a2 += x_step;
+            a3 += x_step;
+            a4 += x_step;
+            a5 += x_step;
+            a6 += x_step;
+            a7 += x_step;
         }
 
-        // handle remaining pixels
-        for (int x = limit; x < width; ++x) {
+        for (; x < width; ++x) {
             float alpha = ((float)x + (float)y) * total_dim_inv;
-            out_ptr[x] = (unsigned char)fmaf(alpha, water_ptr[x], base_ptr[x] * (1.0f - alpha));
+            float one_minus_alpha = 1.0f - alpha;
+            float base_f = (float)base_ptr[x];
+            float water_f = (float)water_ptr[x];
+            float out_f = (water_f * alpha) + (base_f * one_minus_alpha); 
+            out_ptr[x] = (unsigned char)out_f;
         }
     }
 }
 
 int main() {
     Ipp64u start, end;
-    Ipp64u time_avx, time_serial;
+    Ipp64u time1 , time2;
 
-    // Align allocations to 32 bytes for AVX
     Mat base_img = imread("./assets/base.jpg", IMREAD_COLOR);
     Mat water_img = imread("./assets/watermark.png", IMREAD_COLOR);
 
     if (base_img.empty() || water_img.empty()) {
-        cout << "Error: Could not load images.\n";
+        cout << "Error: Could not load images." << endl;
         return 1;
     }
 
     resize(water_img, water_img, base_img.size());
 
-    vector<Mat> base_channels(3), water_channels(3), out_channels(3);
+    vector<Mat> base_channels(3), water_channels(3);
+    // vector<Mat> out_parallel_channels(3); // Original non-aligned vectors
+    // vector<Mat> out_serial_channels(3); // Original non-aligned vectors
+
     split(base_img, base_channels);
     split(water_img, water_channels);
-    for (int i=0; i<3; ++i)
-        out_channels[i] = Mat::zeros(base_img.size(), CV_8UC1);
 
-    __asm__ __volatile__ ("cpuid" ::: "%rax", "%rbx", "%rcx", "%rdx");
+    // --- Aligned Memory Allocation ---
+    const size_t ALIGNMENT = 32; // 32-byte alignment for AVX
+    size_t data_size = base_img.rows * base_img.cols * sizeof(unsigned char);
+    Size img_size = base_img.size();
+
+    // Pointers to hold aligned data
+    unsigned char* base_data_aligned[3];
+    unsigned char* water_data_aligned[3];
+    unsigned char* out_serial_data_aligned[3];
+    unsigned char* out_parallel_data_aligned[3];
+
+    // Mat vectors to wrap aligned data
+    vector<Mat> base_channels_aligned(3);
+    vector<Mat> water_channels_aligned(3);
+    vector<Mat> out_serial_channels_aligned(3);
+    vector<Mat> out_parallel_channels_aligned(3);
+
+    for(int i=0; i<3; ++i) {
+        // Allocate aligned memory
+        base_data_aligned[i] = (unsigned char*)_mm_malloc(data_size, ALIGNMENT);
+        water_data_aligned[i] = (unsigned char*)_mm_malloc(data_size, ALIGNMENT);
+        out_serial_data_aligned[i] = (unsigned char*)_mm_malloc(data_size, ALIGNMENT);
+        out_parallel_data_aligned[i] = (unsigned char*)_mm_malloc(data_size, ALIGNMENT);
+
+        // Copy data from original Mat objects to aligned buffers
+        memcpy(base_data_aligned[i], base_channels[i].data, data_size);
+        memcpy(water_data_aligned[i], water_channels[i].data, data_size);
+        
+        // Zero out the output buffers (optional, but good practice)
+        memset(out_serial_data_aligned[i], 0, data_size);
+        memset(out_parallel_data_aligned[i], 0, data_size);
+
+        // Create Mat headers pointing to the aligned data (no copy)
+        base_channels_aligned[i] = Mat(img_size, CV_8UC1, base_data_aligned[i]);
+        water_channels_aligned[i] = Mat(img_size, CV_8UC1, water_data_aligned[i]);
+        out_serial_channels_aligned[i] = Mat(img_size, CV_8UC1, out_serial_data_aligned[i]);
+        out_parallel_channels_aligned[i] = Mat(img_size, CV_8UC1, out_parallel_data_aligned[i]);
+    }
+    // Original Mat::zeros allocation (no longer needed)
+    // for(int i=0; i<3; ++i) {
+    //     out_parallel_channels[i] = Mat::zeros(base_img.size(), CV_8UC1);
+    //     out_serial_channels[i] = Mat::zeros(base_img.size(), CV_8UC1);
+    // }
+    const float total_dim = 1.0f / (float)(base_img.cols + base_img.rows);
+
+    // -- serial execution ---
     start = ippGetCpuClocks();
-
-    // process 3 channels with full optimization manually
-    for (int i=0; i<3; ++i)
-        blend_channel_avx_manual(base_channels[i], water_channels[i], out_channels[i]);
-
+    for(int i=0; i<3; ++i) {
+        serial_optimized_blend_channel(base_channels_aligned[i], water_channels_aligned[i], out_serial_channels_aligned[i]);
+    }
     end = ippGetCpuClocks();
-    __asm__ __volatile__ ("cpuid" ::: "%rax", "%rbx", "%rcx", "%rdx");
-    time_avx = end - start;
+    time2 = end - start;
 
-
+    // -- parallel execution ---
     start = ippGetCpuClocks();
-    // process 3 channels with full optimization
-    for (int i=0; i<3; ++i)
-        serial_blend_manual(base_channels[i], water_channels[i], out_channels[i]);
-
+    
+    for(int i=0; i<3; ++i) {
+        parallel_blend_avx_channel(base_channels_aligned[i], water_channels_aligned[i], out_parallel_channels_aligned[i]);
+    }
+    
     end = ippGetCpuClocks();
-    time_serial = end - start;
+    time1 = end - start;
 
 
-    Mat out_img;
-    merge(out_channels, out_img);
-    imwrite("watermark_output_manual.jpg", out_img);
+    // --- final result ---
+    Mat out_serial, out_parallel;
+    merge(out_serial_channels_aligned, out_serial);
+    merge(out_parallel_channels_aligned, out_parallel);
+    
+    cout << "--- Watermark Blending (Optimized Serial vs AVX) ---" << endl;
+    cout << std::fixed << std::setprecision(4);
+    cout << "Serial (Optimized) clock cycles: " << (long long)time2 << endl;
+    cout << "Parallel (AVX) clock cycles:     " << (long long)time1 << endl;
+    cout << "Speedup: " << ((double)time2 / (double)time1) << "x" << endl;
 
-    cout << fixed << setprecision(4);
-    cout << "--- Manual Optimized Watermark (No Compiler Opts) ---\n";
-    cout << "Clock cycles: " << (long long)time_avx << "\n";
-    cout << "Clock cycles (serial): " << (long long)time_serial << "\n";
-    cout << "Speedup: " << (float)time_serial / (float)time_avx << "\n";
+    imwrite("watermark_output_serial.jpg", out_serial);
+    imwrite("watermark_output_parallel.jpg", out_parallel);
+    cout << "\nOutput images saved." << endl;
+
+    // --- Free aligned memory ---
+    for(int i=0; i<3; ++i) {
+        _mm_free(base_data_aligned[i]);
+        _mm_free(water_data_aligned[i]);
+        _mm_free(out_serial_data_aligned[i]);
+        _mm_free(out_parallel_data_aligned[i]);
+    }
+
     return 0;
 }
