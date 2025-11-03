@@ -1,8 +1,11 @@
 # --- Compiler ---
 CC = g++
 
+
 # --- Flags ---
-CXXFLAGS = -g -msse3 -mavx -mavx2 -std=c++17 -O2
+CXXFLAGS = -g -msse3 -mavx -mavx2 -mfma -std=c++17
+
+
 
 # --- Paths---
 IPP_INCLUDE_PATH = /opt/intel/oneapi/2025.3/include #change to your IPP include path

@@ -2,16 +2,12 @@
 #include <iomanip>
 #include <vector>
 #include "ipp.h"       
-#include <immintrin.h> 
+#include <immintrin.h>
 #include <opencv2/opencv.hpp>
 
 using namespace std;
 using namespace cv;
 
-
-void serial_blend_channel(const Mat& base_img, const Mat& water_img, Mat& out_img) {
-    
-}
 
 void parallel_blend_avx_channel(const Mat& base_img, const Mat& water_img, Mat& out_img) {
     const int height = base_img.rows;

@@ -12,13 +12,6 @@ using namespace std;
 const size_t ARRAY_SIZE = 16000000;
 const size_t ALIGNMENT = 16; // 16 bytes equivalent to 128 bits for sse instructions
 
-float horizontal_sum_sse(__m128 v) {
-    __m128 sums;
-    sums = _mm_hadd_ps(v, v); // add pairs of single-precision values like [(3+2), (1+0), (3+2), (1+0)]
-    sums = _mm_hadd_ps(sums, sums); // Final horizontal add: [(3+2+1+0), ...]
-    return _mm_cvtss_f32(sums); // convert scalar single-precision to float 32-bit value
-}
-
 int main()
 {
     Ipp64u start, end;
@@ -110,7 +103,7 @@ int main()
     }
     sums = _mm_hadd_ps(sum_vec, sum_vec); // add pairs of single-precision values
     sums = _mm_hadd_ps(sums, sums); 
-    total_sum_simd = (double)_mm_cvtss_f32(sums); // (Cast to double for precision)
+    total_sum_simd = _mm_cvtss_f32(sums);
     
     for (i = limit; i < ARRAY_SIZE; ++i) { total_sum_simd += data[i]; } // add remaining elements
     mean_simd = static_cast<float>(total_sum_simd / ARRAY_SIZE);
@@ -127,7 +120,7 @@ int main()
     }
     sums = _mm_hadd_ps(sum_vec, sum_vec);
     sums = _mm_hadd_ps(sums, sums);
-    total_sq_diff_simd = (double)_mm_cvtss_f32(sums); // (Cast to double for precision)
+    total_sq_diff_simd = _mm_cvtss_f32(sums);
 
     for (i = limit; i < ARRAY_SIZE; ++i) { // add remaining elements
         float diff = data[i] - mean_simd;
