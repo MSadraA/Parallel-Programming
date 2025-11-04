@@ -8,7 +8,7 @@ TARGET = sobel.out
 SRC = sobel.cpp
 
 # --- Flags ---
-CXXFLAGS = -g -mavx -std=c++17 -O2 -pthread
+CXXFLAGS = -g -mavx -std=c++17 -pthread -O2
 
 # ====================================================================
 # OpenCV Paths
