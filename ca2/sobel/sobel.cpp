@@ -17,6 +17,7 @@ const float gaussian_kernel[9] = {
     1.0f, 2.0f, 1.0f
 };
 const float GAUSSIAN_NORM = 16.0f;
+const float GAUSSIAN_RECIPROCAL = 1.0f / 16.0f; 
 
 // Sobel X Kernel
 const float sobel_x_kernel[9] = {
@@ -154,7 +155,7 @@ void convolve_parallel(const Mat& src, Mat& dst, const float* kernel, float norm
             // sum_vec = _mm256_fmadd_ps(p8, k_vec_8, sum_vec);
 
             // --- 4. Normalize and Store ---
-            sum_vec = _mm256_div_ps(sum_vec, k_vec_norm);
+            sum_vec = _mm256_mul_ps(sum_vec, k_vec_norm);
             _mm256_storeu_ps(&p_dst[x], sum_vec);
         }
         
@@ -171,7 +172,7 @@ void convolve_parallel(const Mat& src, Mat& dst, const float* kernel, float norm
             sum += p_bot[x - 1] * kernel[6];
             sum += p_bot[x]     * kernel[7];
             sum += p_bot[x + 1] * kernel[8];
-            p_dst[x] = sum / norm_factor;
+            p_dst[x] = sum * norm_factor;
         }
     }
 }
@@ -372,7 +373,7 @@ int main() {
     start_parallel = __rdtsc();
 
     // Step 1: Parallel Gaussian
-    convolve_parallel(gray_float, blurred_parallel, gaussian_kernel, GAUSSIAN_NORM);
+    convolve_parallel(gray_float, blurred_parallel, gaussian_kernel, GAUSSIAN_RECIPROCAL);
     // Step 2, 3, 4: Parallel Fused Sobel + Magnitude
     sobel_magnitude_fused_parallel(blurred_parallel, magnitude_parallel);
     
