@@ -45,7 +45,6 @@ void forward_layer_serial(
 
 
 // === [NEW] Parallel (SIMD) Implementation - Idea 3 ===
-
 inline __m256 _mm256_relu_ps(__m256 v) {
     const __m256 v_zero = _mm256_setzero_ps();
     return _mm256_max_ps(v, v_zero);
@@ -69,7 +68,6 @@ void forward_layer_parallel_v2(
         const float* p_weight_chunk = weights_vsimd + (j / AVX_LANE_COUNT) * (num_inputs * AVX_LANE_COUNT);
         
         // --- Serial Inner Loop (over inputs) ---
-        // This loop is serial, but its operations are AVX
         for (int i = 0; i < num_inputs; ++i) {
             
             // 1. Load *one* input and broadcast it to all 8 lanes
@@ -96,7 +94,6 @@ void forward_layer_parallel_v2(
 
 
 // === Helper Functions (File I/O) ===
-// (Unchanged from before)
 bool read_from_file(const string& filename, float* data, size_t num_elements) {
     FILE* f = fopen(filename.c_str(), "rb");
     if (f == NULL) {

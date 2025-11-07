@@ -47,25 +47,18 @@ void forward_layer_parallel(
     int num_inputs,
     int num_outputs
 ) {
-    // Calculate the number of 8-float chunks
-    const int num_chunks_8 = num_inputs / 8;
-    
     // Loop over each output neuron (this loop remains serial)
     for (int j = 0; j < num_outputs; ++j) {
         
-        // Pointer to the start of the current weight row
         const float* p_weight_row = weights_transposed + (j * num_inputs);
-        
-        // v_sum will accumulate dot products in 8 parallel "lanes"
         __m256 v_sum = _mm256_setzero_ps();
         
         // --- Vectorized Inner Loop ---
-        // Process inputs 8 at a time
-        for (int i = 0; i < num_chunks_8; ++i) {
+        for (int i = 0; i < num_inputs; i += 8) {
             // Load 8 inputs
-            __m256 v_input = _mm256_load_ps(input_vector + i * 8);
+            __m256 v_input = _mm256_load_ps(input_vector + i);
             // Load 8 weights
-            __m256 v_weight = _mm256_load_ps(p_weight_row + i * 8);
+            __m256 v_weight = _mm256_load_ps(p_weight_row + i);
             
             // Fused Multiply-Add: v_sum = v_sum + (v_input * v_weight)
             v_sum = _mm256_fmadd_ps(v_input, v_weight, v_sum);
@@ -74,50 +67,11 @@ void forward_layer_parallel(
         // --- Horizontal Sum ---
         // Sum the 8 partial sums from v_sum into a single scalar
         float sum = horizontal_sum_avx(v_sum);
-        
-        // // --- Remainder Loop (Scalar) ---
-        // // Handle any inputs that weren't a multiple of 8
-        // for (int i = num_chunks_8 * 8; i < num_inputs; ++i) {
-        //     sum += input_vector[i] * p_weight_row[i];
-        // }
 
         // Add bias and apply activation
         output_vector[j] = activation_relu(sum + bias_vector[j]);
     }
 }
-
-// void forward_layer_parallel(
-//     float* output_vector,
-//     const float* input_vector,
-//     const float* weights_transposed,
-//     const float* bias_vector,
-//     int num_inputs,
-//     int num_outputs
-// ) {
-//     for (int j = 0; j < num_outputs; ++j) {
-//         __m256 sum_vec = _mm256_setzero_ps();
-//         int i = 0;
-//         for (; i <= num_inputs - 8; i += 8) {
-//             __m256 input_vec = _mm256_load_ps(input_vector + i);
-//             __m256 weight_vec = _mm256_load_ps(weights_transposed + j * num_inputs + i);
-//             sum_vec = _mm256_fmadd_ps(input_vec, weight_vec, sum_vec);
-//         }
-
-//         // Horizontal add to get the sum of all elements in sum_vec
-//         float sum_array[8];
-//         _mm256_store_ps(sum_array, sum_vec);
-//         float sum = sum_array[0] + sum_array[1] + sum_array[2] + sum_array[3] +
-//                     sum_array[4] + sum_array[5] + sum_array[6] + sum_array[7];
-
-//         // Handle remaining elements
-//         // for (; i < num_inputs; ++i) {
-//         //     sum += input_vector[i] * weights_transposed[j * num_inputs + i];
-//         // }
-
-//         // Add bias and apply activation function
-//         output_vector[j] = activation_relu(sum + bias_vector[j]);
-//     }
-// }
 
 void forward_layer_serial(
     float* output_vector,
