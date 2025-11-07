@@ -2,7 +2,7 @@
 CXX := C:/msys64/mingw64/bin/g++
 
 # --- Flags ---
-CXXFLAGS = -g -mavx -mfma -std=c++17 -pthread -O2
+CXXFLAGS = -g -mavx -mfma -std=c++17 -pthread 
 
 # ====================================================================
 # OpenCV Paths
