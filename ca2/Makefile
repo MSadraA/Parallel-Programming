@@ -3,7 +3,8 @@ CC = g++
 
 
 # --- Flags ---
-CXXFLAGS = -g -msse3 -mavx -mavx2 -mfma -std=c++17
+CXXFLAGS = -g -msse3 -mavx -mavx2 -mfma -std=c++17 -O2
+# CXXFLAGS = -g -msse3 -mavx -mavx2 -mfma -std=c++17
 
 
 
