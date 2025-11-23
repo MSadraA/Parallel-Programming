@@ -2,7 +2,7 @@
 CXX := C:/msys64/mingw64/bin/g++
 
 # --- Flags ---
-CXXFLAGS = -g -mavx -mfma -std=c++17 -pthread -O2
+CXXFLAGS = -g -mavx -mfma -std=c++17 -pthread 
 
 # ====================================================================
 # OpenCV Paths
@@ -41,13 +41,13 @@ clean:
 
 # Run rules
 # Since 'run' is ambiguous, we create specific run rules
-run-sobel: sobel.out
-	@echo "--- Running Sobel ---"
-	@./sobel.out
+run-network: network.out
+	@echo "--- Running network ---"
+	@./network.out
 
 run-test: test.out
 	@echo "--- Running Test ---"
 	@./test.out
 
-# Make 'make run' default to running sobel.out
-run: run-sobel
+# Make 'make run' default to running network.out
+run: run-network

@@ -41,13 +41,13 @@ clean:
 
 # Run rules
 # Since 'run' is ambiguous, we create specific run rules
-run-sobel: sobel.out
-	@echo "--- Running Sobel ---"
-	@./sobel.out
+run-network: network.out
+	@echo "--- Running network ---"
+	@./network.out
 
 run-test: test.out
 	@echo "--- Running Test ---"
 	@./test.out
 
-# Make 'make run' default to running sobel.out
-run: run-sobel
+# Make 'make run' default to running network.out
+run: run-network
