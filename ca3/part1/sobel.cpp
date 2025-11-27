@@ -6,6 +6,10 @@
 #include <opencv2/opencv.hpp> // OpenCV Library
 #include <immintrin.h> // Main header for AVX
 #include <malloc.h> // For _mm_malloc and _mm_free
+#include "ipp.h"       
+#include <pmmintrin.h> 
+#include "omp.h"
+
 
 using namespace std;
 using namespace cv;
@@ -54,7 +58,7 @@ void convolve_serial(const Mat& src, Mat& dst, const float* kernel, float norm_f
     int cols = src.cols;
     dst.create(rows, cols, CV_32F); 
     dst.setTo(Scalar(0.0));
-
+    
     for (int y = 1; y < rows - 1; ++y) {
         const float* p_top = src.ptr<float>(y - 1);
         const float* p_mid = src.ptr<float>(y);
@@ -252,7 +256,106 @@ void sobel_magnitude_fused_parallel_tiled(const Mat& blurred, Mat& magnitude, in
 }
 
 
+void openmp_fused_pipeline(const Mat& src, Mat& blurred, Mat& magnitude, 
+                             const float* g_kernel, float g_norm) {
+    int rows = src.rows;
+    int cols = src.cols;
+
+    blurred.create(rows, cols, CV_32F);
+    magnitude.create(rows, cols, CV_32F);
+    
+    const int TILE_H = 128; // based on cache line size
+    
+    #pragma omp parallel for schedule(static) proc_bind(close)
+    for (int y_tile = 0; y_tile < rows; y_tile += TILE_H) {
+        
+        int sob_start = max(1, y_tile);
+        int sob_end   = min(rows - 1, y_tile + TILE_H);
+        
+        if (sob_start >= sob_end) continue;
+
+        int gauss_start = max(1, sob_start - 1);
+        int gauss_end   = min(rows - 1, sob_end + 1);
+
+        for (int y = gauss_start; y < gauss_end; ++y) {
+            const float* p_top = src.ptr<float>(y - 1);
+            const float* p_mid = src.ptr<float>(y);
+            const float* p_bot = src.ptr<float>(y + 1);
+            float* p_dst = blurred.ptr<float>(y);
+
+            // apply gaussian filter
+            for (int x = 1; x < cols - 1; ++x) {
+                float sum = 0.0f;
+                sum += p_top[x - 1] * g_kernel[0];
+                sum += p_top[x]     * g_kernel[1];
+                sum += p_top[x + 1] * g_kernel[2];
+                
+                sum += p_mid[x - 1] * g_kernel[3];
+                sum += p_mid[x]     * g_kernel[4];
+                sum += p_mid[x + 1] * g_kernel[5];
+
+                sum += p_bot[x - 1] * g_kernel[6];
+                sum += p_bot[x]     * g_kernel[7];
+                sum += p_bot[x + 1] * g_kernel[8];
+                p_dst[x] = sum / g_norm;
+            }
+        }
+
+        for (int y = sob_start; y < sob_end; ++y) {
+            const float* p_top = blurred.ptr<float>(y - 1);
+            const float* p_mid = blurred.ptr<float>(y);
+            const float* p_bot = blurred.ptr<float>(y + 1);
+            float* p_mag = magnitude.ptr<float>(y);
+            
+            // apply sobel filter
+            for (int x = 1; x < cols - 1; ++x) {
+                float gx = (p_top[x - 1] * sobel_x_kernel[0]) + (p_top[x + 1] * sobel_x_kernel[2]) +
+                           (p_mid[x - 1] * sobel_x_kernel[3]) + (p_mid[x + 1] * sobel_x_kernel[5]) +
+                           (p_bot[x - 1] * sobel_x_kernel[6]) + (p_bot[x + 1] * sobel_x_kernel[8]);
+
+                float gy = (p_top[x - 1] * sobel_y_kernel[0]) + (p_top[x] * sobel_y_kernel[1]) + (p_top[x + 1] * sobel_y_kernel[2]) +
+                           (p_bot[x - 1] * sobel_y_kernel[6]) + (p_bot[x] * sobel_y_kernel[7]) + (p_bot[x + 1] * sobel_y_kernel[8]);
+
+                p_mag[x] = sqrt(gx * gx + gy * gy);
+            }
+        }
+    }
+}
+
+// --- 5. Hybrid Function: OpenMP (Tiling) + SIMD (AVX) ---
+void openmp_simd_fused_pipeline(const Mat& src, Mat& blurred, Mat& magnitude, 
+                                const float* g_kernel, float g_norm) {
+    int rows = src.rows;
+    int cols = src.cols;
+
+    blurred.create(rows, cols, CV_32F);
+    magnitude.create(rows, cols, CV_32F);
+    
+    const int TILE_H = 64;
+    
+    #pragma omp parallel for schedule(static) proc_bind(close)
+    for (int y_tile = 0; y_tile < rows; y_tile += TILE_H) {
+        
+        int sob_start = max(1, y_tile);
+        int sob_end   = min(rows - 1, y_tile + TILE_H);
+        
+        if (sob_start >= sob_end) continue;
+
+        int gauss_start = max(1, sob_start - 1);
+        int gauss_end   = min(rows - 1, sob_end + 1);
+
+        
+        if (gauss_start < gauss_end) {
+            convolve_parallel_tiled(src, blurred, g_kernel, g_norm, gauss_start, gauss_end);
+        }
+
+        sobel_magnitude_fused_parallel_tiled(blurred, magnitude, sob_start, sob_end);
+    }
+}
+
+
 int main() {
+    Ipp64u start, end;
     // --- 0. Load and Prepare Image ---
     Mat base_img = imread("./assets/base.jpg");
     if (base_img.empty()) {
@@ -276,33 +379,42 @@ int main() {
     Mat magnitude_serial = createAlignedMat(rows, cols, CV_32F);
     Mat magnitude_serial_8u(rows, cols, CV_8U);
 
-    cout << "--- Running *Optimized* Serial Sobel Pipeline ---" << endl;
-    unsigned long long start_serial, end_serial;
-    start_serial = __rdtsc();
-    
     // Serial execution
+    // unsigned long long start_serial, end_serial;
+    start = ippGetCpuClocks();
     convolve_serial(gray_float, blurred_serial, gaussian_kernel, GAUSSIAN_NORM);
     sobel_magnitude_fused_serial(blurred_serial, magnitude_serial);
-    
-    end_serial = __rdtsc();
-    unsigned long long time_serial = end_serial - start_serial;
-    cout << "Serial Time (clocks): " << time_serial << endl;
-    
+    end = ippGetCpuClocks();
+    unsigned long long time_serial = end - start;
     magnitude_serial.convertTo(magnitude_serial_8u, CV_8U);
     imwrite("sobel_serial_result.jpg", magnitude_serial_8u);
+
+
+    // OpenMp execution
+    Mat blurred_openmp = createAlignedMat(rows, cols, CV_32F);
+    Mat magnitude_openmp = createAlignedMat(rows, cols, CV_32F);
+    Mat magnitude_openmp_8u(rows, cols, CV_8U);
+
+
+    // unsigned long long start_openmp, end_openmp;
+    start = ippGetCpuClocks();
+    openmp_fused_pipeline(gray_float, blurred_openmp, magnitude_openmp , gaussian_kernel , GAUSSIAN_NORM);
+    end = ippGetCpuClocks();
+    unsigned long long time_openmp = end - start;
+    magnitude_openmp.convertTo(magnitude_openmp_8u, CV_8U);
+    imwrite("sobel_openmp_result.jpg", magnitude_openmp_8u);
 
     // --- 2. Parallel Timing (Tiled + SIMD) ---
     Mat blurred_parallel = createAlignedMat(rows, cols, CV_32F);
     Mat magnitude_parallel = createAlignedMat(rows, cols, CV_32F);
     Mat magnitude_parallel_8u(rows, cols, CV_8U);
 
-    cout << "--- Running Parallel Sobel Pipeline (Tiled + SIMD) ---" << endl;
     
     // Define the tile size. 64 or 128 rows
     const int TILE_HEIGHT = 64; 
     
-    unsigned long long start_parallel, end_parallel;
-    start_parallel = __rdtsc();
+    // unsigned long long start_parallel, end_parallel;
+    start = ippGetCpuClocks();
 
     // This is the main Tiling execution loop
     // This loop is serial, but its internal operations are cache-optimized
@@ -337,33 +449,41 @@ int main() {
             sobel_magnitude_fused_parallel_tiled(blurred_parallel, magnitude_parallel, y_sobel_start, y_sobel_end);
         }
     
-    end_parallel = __rdtsc();
-    unsigned long long time_parallel = end_parallel - start_serial; // [BUG] This should be end_parallel - start_parallel
-    
-    // --- [CORRECTION] ---
-    // The timer for parallel was started *after* the serial execution.
-    // Let's assume the user meant to time only the parallel part.
-    // The previous code had `time_parallel = end_parallel - start_serial;` which is wrong.
-    // It should be:
-    time_parallel = end_parallel - start_parallel;
-    
-    cout << "Parallel Time (clocks): " << time_parallel << endl;
-
+    end = ippGetCpuClocks();
+    unsigned long long time_parallel = end - start;
     magnitude_parallel.convertTo(magnitude_parallel_8u, CV_8U);
     imwrite("sobel_parallel_result.jpg", magnitude_parallel_8u);
+
+    // OpenMp + SIMD execution
+    Mat blurred_openmp_simd = createAlignedMat(rows, cols, CV_32F);
+    Mat magnitude_omp_simd = createAlignedMat(rows, cols, CV_32F);
+    Mat magnitude_omp_simd_8u(rows, cols, CV_8U);
+
+    start = ippGetCpuClocks();
+    openmp_simd_fused_pipeline(gray_float, blurred_openmp_simd, magnitude_omp_simd, gaussian_kernel, GAUSSIAN_RECIPROCAL);
+    end = ippGetCpuClocks();
+    unsigned long long time_openmp_simd = end - start;
+    magnitude_omp_simd.convertTo(magnitude_omp_simd_8u, CV_8U);
+    imwrite("sobel_openmp_simd_result.jpg", magnitude_omp_simd_8u);
 
     // --- 3. Final Results ---
     cout << "--- Results ---" << endl;
     cout << "Serial Time:   " << time_serial << " clocks" << endl;
-    cout << "Parallel Time: " << time_parallel << " clocks" << endl;
-    cout << "Speedup:       " << fixed << setprecision(2) << (double)time_serial / time_parallel << "x" << endl;
-
+    cout << "SIMD Time: " << time_parallel << " clocks" << endl;
+    cout << "OpenMP Time:   " << time_openmp << " clocks" << endl;
+    cout << "OpenMP+SIMD Time:   " << time_openmp_simd << " clocks" << endl;
+    cout << "Speedup (SIMD):       " << fixed << setprecision(2) << (double)time_serial / time_parallel << "x" << endl;
+    cout << "Speedup (OMP):     " << fixed << setprecision(2) << (double)time_serial / time_openmp << "x" << endl;
+    cout << "Speedup (OMP+SIMD):     " << fixed << setprecision(2) << (double)time_serial / time_openmp_simd << "x" << endl;
     // --- 4. Free Aligned Memory ---
     freeAlignedMat(gray_float);
     freeAlignedMat(blurred_serial);
     freeAlignedMat(magnitude_serial);
     freeAlignedMat(blurred_parallel);
     freeAlignedMat(magnitude_parallel);
+    freeAlignedMat(magnitude_openmp);
+    freeAlignedMat(blurred_openmp_simd);
+    freeAlignedMat(magnitude_omp_simd);
 
     return 0;
 }
