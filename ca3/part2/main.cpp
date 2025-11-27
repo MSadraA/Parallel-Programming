@@ -40,13 +40,13 @@ void generate_julia_serial(Mat& image) {
         // Accessing memory row by row is cache-friendly.
         // Used for colors - BGR order
         Vec3b* row_ptr = image.ptr<Vec3b>(y);
+        double imag = IMAG_MIN + (double)y / HEIGHT * (IMAG_MAX - IMAG_MIN);
 
         // Loop over every column (x)
         for (int x = 0; x < WIDTH; ++x) {
             
             // --- Step 1: Map pixel coordinate (x, y) to complex plane (real, imag) ---
             double real = REAL_MIN + (double)x / WIDTH * (REAL_MAX - REAL_MIN);
-            double imag = IMAG_MIN + (double)y / HEIGHT * (IMAG_MAX - IMAG_MIN);
 
             complex<double> z(real, imag);
             
@@ -85,22 +85,30 @@ void generate_julia_serial(Mat& image) {
     }
 }
 
+
+
 /**
  * @brief Generates the Julia Set image in parallel using OpenMP.
  * Uses dynamic scheduling to handle load imbalance.
  * @param image Reference to the OpenCV Mat object to fill.
  */
+const int CHUNK_SIZE = 10;
 void generate_julia_parallel(Mat& image) {
     
     // Loop variables declared outside to be compatible with OpenMP directive syntax
     int y;
+
+    // Pre-calculate steps to avoid division inside the loop
+    double dx = (REAL_MAX - REAL_MIN) / WIDTH;
+    double dy = (IMAG_MAX - IMAG_MIN) / HEIGHT;
+    double imag, real;
     
     // --- OpenMP Directive Explanation ---
     // parallel for: Automatically splits the loop iterations among threads.
     // schedule(dynamic): Assigns chunks of work dynamically. Crucial here because
     //                    some rows (outside the set) finish fast, while others (inside) take long.
     // shared(image): The image matrix is shared (threads write to different parts).
-    #pragma omp parallel for schedule(dynamic) shared(image) private(y)
+    #pragma omp parallel for schedule(dynamic, CHUNK_SIZE) shared(image, dx, dy) private(y, imag, real)
     for (y = 0; y < HEIGHT; ++y) {
         
         // Get pointer to the current row.
@@ -108,21 +116,21 @@ void generate_julia_parallel(Mat& image) {
         // different rows 'y', so no race condition occurs here.
         Vec3b* row_ptr = image.ptr<Vec3b>(y);
 
+        double imag = IMAG_MIN + y * dy;
+        double real;
+
         // Inner loop (x) runs serially within each thread for the assigned row 'y'
         for (int x = 0; x < WIDTH; ++x) {
             
             // --- Step 1: Map pixel to complex plane ---
-            // Optimization: Pre-calculate constants to avoid division in loop if possible,
-            // but for readability, we keep the formula.
-            double real = REAL_MIN + (double)x / WIDTH * (REAL_MAX - REAL_MIN);
-            double imag = IMAG_MIN + (double)y / HEIGHT * (IMAG_MAX - IMAG_MIN);
+            real = REAL_MIN + x * dx;
 
             complex<double> z(real, imag);
             
             // --- Step 2: Iterate ---
             int iter = 0;
             while (iter < MAX_ITER) {
-                // Check squared norm > 4.0
+                // Check squared norm
                 if (std::norm(z) > ESCAPE_RADIUS_SQ) {
                     break; 
                 }
@@ -152,7 +160,7 @@ void generate_julia_parallel(Mat& image) {
 
 
 int main() {
-    // Create a black image (CV_8UC3 means 8-bit Unsigned, 3 Channels/Colors)
+    // 1. Setup Images
     Mat image_serial(HEIGHT, WIDTH, CV_8UC3, Scalar(0, 0, 0));
     Mat image_parallel(HEIGHT, WIDTH, CV_8UC3, Scalar(0, 0, 0));
 
@@ -160,35 +168,37 @@ int main() {
     cout << "Image: " << WIDTH << "x" << HEIGHT << endl;
     cout << "Max Iterations: " << MAX_ITER << endl;
     cout << "Power N: " << POWER_N << endl;
-    cout << "Max Threads: " << omp_get_max_threads() << endl; // Check available cores
+    cout << "Max Threads: " << omp_get_max_threads() << endl;
     cout << "-----------------------------------" << endl;
 
-    // Start Timing
-    // unsigned long long start_clock, end_clock;
-
-    // 2. Run Serial
+    // 2. Run Serial (with RDTSC timing)
     cout << "Running Serial..." << endl;
-    double start_serial = omp_get_wtime();
+    unsigned long long start_serial = __rdtsc();
+    
     generate_julia_serial(image_serial);
-    double end_serial = omp_get_wtime();
-    double time_serial = end_serial - start_serial;
-    cout << "Serial Time:   " << time_serial << " seconds." << endl;
+    
+    unsigned long long end_serial = __rdtsc();
+    unsigned long long time_serial = end_serial - start_serial;
+    cout << "Serial Time:   " << time_serial << " clocks." << endl;
 
-    // 3. Run Parallel (OpenMP)
+    // 3. Run Parallel (OpenMP) (with RDTSC timing)
     cout << "Running Parallel (OpenMP)..." << endl;
-    double start_parallel = omp_get_wtime();
+    unsigned long long start_parallel = __rdtsc();
+    
     generate_julia_parallel(image_parallel);
-    double end_parallel = omp_get_wtime();
-    double time_parallel = end_parallel - start_parallel;
-    cout << "Parallel Time: " << time_parallel << " seconds." << endl;
+    
+    unsigned long long end_parallel = __rdtsc();
+    unsigned long long time_parallel = end_parallel - start_parallel;
+    cout << "Parallel Time: " << time_parallel << " clocks." << endl;
 
-// 4. Results & Speedup
+    // 4. Results & Speedup
     cout << "-----------------------------------" << endl;
-    cout << "Speedup: " << time_serial / time_parallel << "x" << endl;
+    cout << fixed << setprecision(2);
+    cout << "Speedup: " << (double)time_serial / time_parallel << "x" << endl;
 
     // 5. Save Images
-    imwrite("output/julia_serial.jpg", image_serial);
-    imwrite("output/julia_parallel.jpg", image_parallel);
+    imwrite("julia_serial.jpg", image_serial);
+    imwrite("julia_parallel.jpg", image_parallel);
     cout << "Images saved." << endl;
 
     return 0;
