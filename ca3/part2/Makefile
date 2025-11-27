@@ -5,7 +5,7 @@ CXX      := C:/msys64/mingw64/bin/g++
 
 # Compiler Flags
 # Added -fopenmp because we are working on an OpenMP project
-CXXFLAGS := -g -mavx -mfma -std=c++17 -pthread -O2 -fopenmp
+CXXFLAGS = -g -mavx -mavx2 -mfma -std=c++17 -pthread -O2 -fopenmp
 
 # ====================================================================
 # OpenCV Configuration
