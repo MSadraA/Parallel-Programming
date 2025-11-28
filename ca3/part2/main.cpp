@@ -182,7 +182,7 @@ void generate_julia_avx(Mat& image) {
     __m256 v_x_offsets = _mm256_set_ps(7.0f, 6.0f, 5.0f, 4.0f, 3.0f, 2.0f, 1.0f, 0.0f);
 
     // OpenMP for outer loop (Rows)
-    #pragma omp parallel for schedule(dynamic, 20) shared(image) private(y)
+    #pragma omp parallel for schedule(dynamic, CHUNK_SIZE) shared(image) private(y)
     for (y = 0; y < HEIGHT; ++y) {
         
         Vec3b* row_ptr = image.ptr<Vec3b>(y);
