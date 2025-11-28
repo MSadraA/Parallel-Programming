@@ -27,10 +27,6 @@ const double IMAG_MAX = 1.5;
 // We use squared radius to avoid expensive sqrt() calculations
 const double ESCAPE_RADIUS_SQ = 4.0;
 
-/**
- * @brief Generates the Julia Set image serially.
- * * @param image Reference to the OpenCV Mat object to fill.
- */
 void generate_julia_serial(Mat& image) {
     
     // Loop over every row (y)
@@ -41,7 +37,7 @@ void generate_julia_serial(Mat& image) {
         // Used for colors - BGR order
         Vec3b* row_ptr = image.ptr<Vec3b>(y);
         double imag = IMAG_MIN + (double)y / HEIGHT * (IMAG_MAX - IMAG_MIN);
-
+        
         // Loop over every column (x)
         for (int x = 0; x < WIDTH; ++x) {
             
@@ -70,12 +66,7 @@ void generate_julia_serial(Mat& image) {
                 // Point is convergent (part of the set) -> Color Black
                 row_ptr[x] = Vec3b(0, 0, 0); 
             } else {
-                // Point is divergent -> Color based on how fast it escaped.
-                // Simple coloring: Map iteration count to grayscale or a color map.
-                // Here we use a simple formula for visual variety.
-                
                 // I just changed the constants for a better visual effect :)
-                // Example: Map iter 0-1000 to 0-255
                 unsigned char color_val = (unsigned char)(255.0 * iter / 10); 
                 // BGR format in OpenCV
                 // Just a simple coloring scheme (Blueish to White)
@@ -85,13 +76,6 @@ void generate_julia_serial(Mat& image) {
     }
 }
 
-
-
-/**
- * @brief Generates the Julia Set image in parallel using OpenMP.
- * Uses dynamic scheduling to handle load imbalance.
- * @param image Reference to the OpenCV Mat object to fill.
- */
 const int CHUNK_SIZE = 10;
 void generate_julia_parallel(Mat& image) {
     
@@ -157,7 +141,6 @@ void generate_julia_parallel(Mat& image) {
         }
     }
 }
-
 
 // Add this helper function for AVX
 void generate_julia_avx(Mat& image) {
@@ -327,22 +310,28 @@ int main() {
     // 2. Run Serial (with RDTSC timing)
     cout << "Running Serial..." << endl;
     unsigned long long start_serial = __rdtsc();
+    double start_serial_time = omp_get_wtime();
     
     generate_julia_serial(image_serial);
     
+    double end_serial_time = omp_get_wtime();
     unsigned long long end_serial = __rdtsc();
     unsigned long long time_serial = end_serial - start_serial;
     cout << "Serial Time:   " << time_serial << " clocks." << endl;
-
+    cout << "Serial Time:   " << end_serial_time - start_serial_time << " seconds." << endl;
+    
     // 3. Run Parallel (OpenMP) (with RDTSC timing)
     cout << "Running Parallel (OpenMP)..." << endl;
     unsigned long long start_parallel = __rdtsc();
+    double start_parallel_time = omp_get_wtime();
     
     generate_julia_parallel(image_parallel);
     
+    double end_parallel_time = omp_get_wtime();
     unsigned long long end_parallel = __rdtsc();
     unsigned long long time_parallel = end_parallel - start_parallel;
     cout << "Parallel Time: " << time_parallel << " clocks." << endl;
+    cout << "Parallel Time: " << end_parallel_time - start_parallel_time << " seconds." << endl;
 
     // 4. Run Parallel (OpenMP + AVX)
     Mat image_avx(HEIGHT, WIDTH, CV_8UC3, Scalar(0, 0, 0));
@@ -355,6 +344,7 @@ int main() {
     double end_avx_time = omp_get_wtime();
     unsigned long long end_avx = __rdtsc();
     unsigned long long time_avx = end_avx - start_avx;
+    cout << "AVX Time: " << time_avx << " clocks." << endl;
     cout << "AVX Time: " << (end_avx_time - start_avx_time) << " seconds." << endl;
 
     // 4. Results & Speedup
@@ -362,6 +352,7 @@ int main() {
     cout << fixed << setprecision(2);
     cout << "Speedup: " << (double)time_serial / time_parallel << "x" << endl;
     cout << "Speedup avx (vs Serial): " << (double)time_serial / (end_avx - start_avx) << "x" << endl;
+    cout << "Speedup avx (vs Parallel): " << (double)time_parallel / (end_avx - start_avx) << "x" << endl;
 
     // 5. Save Images
     imwrite("output/julia_serial.jpg", image_serial);
