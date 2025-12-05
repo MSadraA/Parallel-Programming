@@ -5,7 +5,10 @@
 #include <unistd.h>  // For sleep()
 #include "ThreadSafeQueue.hpp"
 #include <opencv2/opencv.hpp>
+#include <conio.h>
 
+using namespace std;
+using namespace cv;
 // --- Argument Structures ---
 // Since pthread_create only accepts a single void* argument,
 // we need structs to bundle the queues required for each worker.
@@ -64,6 +67,19 @@ void* input_worker(void* args) {
 
         // Optional: Log every X frames to avoid console spam
         // std::cout << "[Input] Pushed frame to queue." << std::endl;
+
+        if (_kbhit()) {
+            // _getch() reads the key without waiting for Enter
+            int key = _getch();
+            
+            // 113 is ASCII for 'q', 27 is ASCII for 'ESC'
+            if (key == 'q' || key == 113 || key == 27) {
+                cout << "Stopping recording..." << endl;
+                // send a signal to worker using empty frame
+                my_args->raw_queue->push(cv::Mat());
+                break;
+            }
+        }
     }
 
     // 6. Cleanup
