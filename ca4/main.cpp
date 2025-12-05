@@ -6,10 +6,6 @@
 #include "ThreadSafeQueue.hpp"
 #include <opencv2/opencv.hpp>
 
-// Define data types
-using RawData = std::string;
-using ResultData = std::string;
-
 // --- Argument Structures ---
 // Since pthread_create only accepts a single void* argument,
 // we need structs to bundle the queues required for each worker.
@@ -20,12 +16,13 @@ struct InputArgs {
 };
 
 struct ProcessArgs {
-    ThreadSafeQueue<RawData>* raw_queue;
-    ThreadSafeQueue<ResultData>* result_queue;
+    ThreadSafeQueue<cv::Mat>* raw_queue;
+    ThreadSafeQueue<cv::Mat>* result_queue;
 };
 
 struct OutputArgs {
-    ThreadSafeQueue<ResultData>* result_queue;
+    ThreadSafeQueue<cv::Mat>* result_queue;
+    std::string filename;
 };
 
 // --- Worker Functions ---
@@ -53,8 +50,9 @@ void* input_worker(void* args) {
 
         // 4. Check if we succeeded (if frame is empty, stream might have ended)
         if (frame.empty()) {
-            my_args->raw_queue->push();
             std::cerr << "[Input] Error: Blank frame grabbed or camera disconnected." << std::endl;
+            // send a signal to worker using empty frame
+            my_args->raw_queue->push(cv::Mat());
             break;
         }
 
@@ -132,75 +130,137 @@ void* process_worker(void* args) {
 // 3. Output Worker
 void* output_worker(void* args) {
     OutputArgs* my_args = static_cast<OutputArgs*>(args);
+    
+    cv::VideoWriter writer;
+    bool is_writer_initialized = false;
+    long frame_count = 0;
+    
+    // Timer variables
+    auto start_time = std::chrono::steady_clock::now();
+
+    std::cout << "[Output] Worker started. Waiting for frames..." << std::endl;
 
     while (true) {
-        auto result_opt = my_args->result_queue->pop();
-        
-        if (!result_opt.has_value()) {
-            std::cout << "[Output] Shutdown signal received." << std::endl;
+        // 1. Receive frame from queue
+        cv::Mat frame = my_args->result_queue->pop();
+
+        // Check for stop signal
+        if (frame.empty()) {
+            std::cout << "[Output] Stop signal received. Finalizing..." << std::endl;
             break;
         }
 
-        std::string result = result_opt.value();
-        std::cout << "[Output] Final Result: " << result << std::endl;
+        // 2. Initialize VideoWriter with the first frame
+        if (!is_writer_initialized) {
+            // Using MJPG codec
+            int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
+            double fps = 30.0; // Target FPS (or derive from camera if passed in args)
+            cv::Size frame_size = frame.size();
+            
+            // IMPORTANT: isColor = false because Sobel output is Grayscale
+            bool isColor = false; 
+
+            writer.open(my_args->filename, fourcc, fps, frame_size, isColor);
+
+            if (!writer.isOpened()) {
+                std::cerr << "[Output] Error: Could not open video writer!" << std::endl;
+                break; // Exit if we can't save
+            }
+
+            // Start the timer when the first frame arrives
+            start_time = std::chrono::steady_clock::now();
+            is_writer_initialized = true;
+            std::cout << "[Output] VideoWriter initialized. Recording..." << std::endl;
+        }
+
+        // 3. Save processed frame
+        writer.write(frame);
+        frame_count++;
+        
+        // Optional: Show progress every 30 frames
+        if (frame_count % 30 == 0) {
+            std::cout << "." << std::flush;
+        }
     }
+
+    // 4. Calculate Average FPS
+    auto end_time = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsed_seconds = end_time - start_time;
+    
+    if (elapsed_seconds.count() > 0) {
+        double avg_fps = frame_count / elapsed_seconds.count();
+        std::cout << "\n[Output] Processing Finished." << std::endl;
+        std::cout << "[Output] Total Frames: " << frame_count << std::endl;
+        std::cout << "[Output] Average FPS:  " << avg_fps << std::endl;
+    }
+
+    // Release writer
+    writer.release();
     return NULL;
 }
 
 // --- Main Application ---
 
 int main() {
-    // Queues
-    ThreadSafeQueue<RawData> raw_queue;
-    ThreadSafeQueue<ResultData> result_queue;
+    // 1. Initialize thread-safe queues
+    ThreadSafeQueue<cv::Mat> raw_queue;
+    ThreadSafeQueue<cv::Mat> result_queue;
 
-    std::cout << "Starting Pipeline with Pthreads..." << std::endl;
+    // 2. Prepare arguments for workers
+    InputArgs input_args;
+    input_args.raw_queue = &raw_queue;
+    input_args.camera_id = 0; // Default camera index
 
-    // Thread identifiers
-    pthread_t producer_thread;
-    pthread_t processor_thread;
-    pthread_t consumer_thread;
+    ProcessArgs process_args;
+    process_args.raw_queue = &raw_queue;
+    process_args.result_queue = &result_queue;
 
-    // Prepare arguments
-    InputArgs in_args = { &raw_queue };
-    ProcessArgs proc_args = { &raw_queue, &result_queue };
-    OutputArgs out_args = { &result_queue };
+    OutputArgs output_args;
+    output_args.result_queue = &result_queue;
+    output_args.filename = "output_sobel.avi";
 
-    // Create Threads
-    // Syntax: pthread_create(&thread_id, attributes, function_ptr, argument_ptr)
-    if (pthread_create(&producer_thread, NULL, input_worker, (void*)&in_args) != 0) {
-        std::cerr << "Failed to create input thread" << std::endl;
+    // 3. Create threads
+    pthread_t thread_in, thread_proc, thread_out;
+
+    std::cout << "[Main] Starting threads..." << std::endl;
+
+    if (pthread_create(&thread_in, NULL, input_worker, &input_args) != 0) {
+        std::cerr << "[Main] Error: Failed to create Input thread." << std::endl;
         return 1;
     }
 
-    if (pthread_create(&processor_thread, NULL, process_worker, (void*)&proc_args) != 0) {
-        std::cerr << "Failed to create process thread" << std::endl;
+    if (pthread_create(&thread_proc, NULL, process_worker, &process_args) != 0) {
+        std::cerr << "[Main] Error: Failed to create Process thread." << std::endl;
         return 1;
     }
 
-    if (pthread_create(&consumer_thread, NULL, output_worker, (void*)&out_args) != 0) {
-        std::cerr << "Failed to create output thread" << std::endl;
+    if (pthread_create(&thread_out, NULL, output_worker, &output_args) != 0) {
+        std::cerr << "[Main] Error: Failed to create Output thread." << std::endl;
         return 1;
     }
 
-    // Wait for Input thread to finish
-    pthread_join(producer_thread, NULL);
+    // 4. Synchronization Logic (Waterfall Shutdown)
+    
+    // Step A: Wait for Input worker to finish (Camera disconnects or error)
+    // Note: input_worker sends an empty frame to raw_queue before exiting.
+    pthread_join(thread_in, NULL);
+    std::cout << "[Main] Input thread joined." << std::endl;
 
-    // Shutdown raw queue to signal processor to stop
-    std::cout << "Input finished. Shutting down Raw Queue..." << std::endl;
-    raw_queue.shutdown();
+    // Step B: Wait for Process worker to finish
+    // It finishes after receiving the empty frame from input_worker.
+    pthread_join(thread_proc, NULL);
+    std::cout << "[Main] Process thread joined." << std::endl;
 
-    // Wait for Processor thread to finish
-    pthread_join(processor_thread, NULL);
+    // Step C: Send stop signal to Output worker
+    // As per requirement: Manually push empty frame after process is done.
+    std::cout << "[Main] Sending stop signal to Output worker..." << std::endl;
+    result_queue.push(cv::Mat());
 
-    // Shutdown result queue to signal output to stop
-    std::cout << "Processing finished. Shutting down Result Queue..." << std::endl;
-    result_queue.shutdown();
+    // Step D: Wait for Output worker to finish saving and calculating FPS
+    pthread_join(thread_out, NULL);
+    std::cout << "[Main] Output thread joined." << std::endl;
 
-    // Wait for Consumer thread to finish
-    pthread_join(consumer_thread, NULL);
-
-    std::cout << "Pipeline finished successfully." << std::endl;
+    std::cout << "[Main] Application finished successfully." << std::endl;
 
     return 0;
 }
