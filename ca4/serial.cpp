@@ -16,6 +16,7 @@ using namespace cv;
 struct InputArgs {
     ThreadSafeQueue<cv::Mat>* raw_queue;
     int camera_id; // Added camera ID to make it flexible
+    double* shared_fps;
 };
 
 struct ProcessArgs {
@@ -26,6 +27,7 @@ struct ProcessArgs {
 struct OutputArgs {
     ThreadSafeQueue<cv::Mat>* result_queue;
     std::string filename;
+    double* shared_fps;
 };
 
 // --- Worker Functions ---
@@ -43,8 +45,13 @@ void* input_worker(void* args) {
         std::cerr << "[Input] Error: Could not open camera." << std::endl;
         return NULL;
     }
-
     std::cout << "[Input] Camera opened. Starting capture..." << std::endl;
+
+    double actual_fps = cap.get(cv::CAP_PROP_FPS);
+    if (actual_fps <= 0) actual_fps = 30.0;
+    *(my_args->shared_fps) = actual_fps;
+    
+    std::cout << "[Input] Camera FPS detected: " << actual_fps << std::endl;
 
     cv::Mat frame;
     while (true) {
@@ -170,7 +177,10 @@ void* output_worker(void* args) {
         if (!is_writer_initialized) {
             // Using MJPG codec
             int fourcc = cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
-            double fps = 30.0; // Target FPS (or derive from camera if passed in args)
+
+            double fps = *(my_args->shared_fps); 
+            if (fps <= 0) fps = 30.0;
+
             cv::Size frame_size = frame.size();
             
             // IMPORTANT: isColor = false because Sobel output is Grayscale
@@ -223,9 +233,12 @@ int main() {
     ThreadSafeQueue<cv::Mat> result_queue;
 
     // 2. Prepare arguments for workers
+    double shared_fps = 30.0;
+    
     InputArgs input_args;
     input_args.raw_queue = &raw_queue;
     input_args.camera_id = 0; // Default camera index
+    input_args.shared_fps = &shared_fps;
 
     ProcessArgs process_args;
     process_args.raw_queue = &raw_queue;
@@ -233,7 +246,9 @@ int main() {
 
     OutputArgs output_args;
     output_args.result_queue = &result_queue;
-    output_args.filename = "output_sobel.avi";
+    output_args.filename = "output_sobel_serial.avi";
+    output_args.shared_fps = &shared_fps;
+
 
     // 3. Create threads
     pthread_t thread_in, thread_proc, thread_out;
@@ -277,6 +292,7 @@ int main() {
     std::cout << "[Main] Output thread joined." << std::endl;
 
     std::cout << "[Main] Application finished successfully." << std::endl;
+
 
     return 0;
 }
