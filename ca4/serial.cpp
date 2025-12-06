@@ -38,7 +38,8 @@ void* input_worker(void* args) {
     InputArgs* my_args = static_cast<InputArgs*>(args);
     
     // 2. Open the webcam (0 is usually the default camera)
-    cv::VideoCapture cap(my_args->camera_id);
+    // cv::VideoCapture cap(my_args->camera_id);
+    cv::VideoCapture cap("sample/test.avi");
 
     // Check if camera opened successfully
     if (!cap.isOpened()) {
@@ -217,6 +218,7 @@ void* output_worker(void* args) {
         double avg_fps = frame_count / elapsed_seconds.count();
         std::cout << "\n[Output] Processing Finished." << std::endl;
         std::cout << "[Output] Total Frames: " << frame_count << std::endl;
+        std::cout << "[Output] Time:  " << elapsed_seconds.count() << std::endl;
         std::cout << "[Output] Average FPS:  " << avg_fps << std::endl;
     }
 

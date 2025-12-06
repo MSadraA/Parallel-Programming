@@ -5,7 +5,7 @@ CXX      := C:/msys64/mingw64/bin/g++
 
 # Compiler Flags
 # -fopenmp is essential for the parallel version
-CXXFLAGS := -g -mavx -mavx2 -mfma -std=c++17 -pthread -O2 -fopenmp
+CXXFLAGS := -g -mavx -mavx2 -mfma -std=c++17 -O3 -pthread -fopenmp
 
 # ====================================================================
 # OpenCV Configuration
