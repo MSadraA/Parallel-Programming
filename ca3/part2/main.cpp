@@ -350,9 +350,9 @@ int main() {
     // 4. Results & Speedup
     cout << "-----------------------------------" << endl;
     cout << fixed << setprecision(2);
-    cout << "Speedup: " << (double)time_serial / time_parallel << "x" << endl;
-    cout << "Speedup avx (vs Serial): " << (double)time_serial / (end_avx - start_avx) << "x" << endl;
-    cout << "Speedup avx (vs Parallel): " << (double)time_parallel / (end_avx - start_avx) << "x" << endl;
+    cout << "Speedup openMP (vs Serial): " << (double)time_serial / time_parallel << "x" << endl;
+    cout << "Speedup openMP + SIMD (vs Serial): " << (double)time_serial / (end_avx - start_avx) << "x" << endl;
+    cout << "Speedup openMP + SIMD (vs openMP): " << (double)time_parallel / (end_avx - start_avx) << "x" << endl;
 
     // 5. Save Images
     imwrite("output/julia_serial.jpg", image_serial);
