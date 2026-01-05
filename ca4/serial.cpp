@@ -5,7 +5,12 @@
 #include <unistd.h>  // For sleep()
 #include "ThreadSafeQueue.hpp"
 #include <opencv2/opencv.hpp>
-#include <conio.h>
+// #include <conio.h>
+
+#include <termios.h>
+#include <unistd.h>
+#include <fcntl.h>
+
 
 using namespace std;
 using namespace cv;
@@ -30,6 +35,31 @@ struct OutputArgs {
     double* shared_fps;
 };
 
+int kbhit_linux() {
+    termios oldt, newt;
+    int ch;
+    int oldf;
+
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+
+    oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
+
+    ch = getchar();
+
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    fcntl(STDIN_FILENO, F_SETFL, oldf);
+
+    if (ch != EOF) {
+        ungetc(ch, stdin);
+        return 1;
+    }
+    return 0;
+}
+
 // --- Worker Functions ---
 
 // 1. Input Worker
@@ -38,8 +68,8 @@ void* input_worker(void* args) {
     InputArgs* my_args = static_cast<InputArgs*>(args);
     
     // 2. Open the webcam (0 is usually the default camera)
-    // cv::VideoCapture cap(my_args->camera_id);
-    cv::VideoCapture cap("sample/test.avi");
+    cv::VideoCapture cap(my_args->camera_id);
+    // cv::VideoCapture cap("sample/test.avi");
 
     // Check if camera opened successfully
     if (!cap.isOpened()) {
@@ -76,14 +106,10 @@ void* input_worker(void* args) {
         // Optional: Log every X frames to avoid console spam
         // std::cout << "[Input] Pushed frame to queue." << std::endl;
 
-        if (_kbhit()) {
-            // _getch() reads the key without waiting for Enter
-            int key = _getch();
-            
-            // 113 is ASCII for 'q', 27 is ASCII for 'ESC'
-            if (key == 'q' || key == 113 || key == 27) {
+        if (kbhit_linux()) {
+            int key = getchar();
+            if (key == 'q' || key == 27) {
                 cout << "Stopping recording..." << endl;
-                // send a signal to worker using empty frame
                 my_args->raw_queue->push(cv::Mat());
                 break;
             }
@@ -213,7 +239,7 @@ void* output_worker(void* args) {
     // 4. Calculate Average FPS
     auto end_time = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed_seconds = end_time - start_time;
-    
+
     if (elapsed_seconds.count() > 0) {
         double avg_fps = frame_count / elapsed_seconds.count();
         std::cout << "\n[Output] Processing Finished." << std::endl;
